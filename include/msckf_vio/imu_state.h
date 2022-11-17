@@ -62,6 +62,7 @@ struct IMUState
     // `velocity`. There three variables are used to modify
     // the transition matrices to make the observability matrix
     // have proper null space.
+    // 用于使可观测性矩阵具有适当的零空间
     Eigen::Vector4d orientation_null;
     Eigen::Vector3d position_null;
     Eigen::Vector3d velocity_null;
@@ -82,25 +83,27 @@ struct IMUState
     // Normally, this transform should be identity.
     static Eigen::Isometry3d T_imu_body;
 
-    IMUState() : id(0), time(0),
-                    orientation(Eigen::Vector4d(0, 0, 0, 1)),
-                    position(Eigen::Vector3d::Zero()),
-                    velocity(Eigen::Vector3d::Zero()),
-                    gyro_bias(Eigen::Vector3d::Zero()),
-                    acc_bias(Eigen::Vector3d::Zero()),
-                    orientation_null(Eigen::Vector4d(0, 0, 0, 1)),
-                    position_null(Eigen::Vector3d::Zero()),
-                    velocity_null(Eigen::Vector3d::Zero()) {}
+    IMUState() 
+        : id(0), time(0),
+        orientation(Eigen::Vector4d(0, 0, 0, 1)),
+        position(Eigen::Vector3d::Zero()),
+        velocity(Eigen::Vector3d::Zero()),
+        gyro_bias(Eigen::Vector3d::Zero()),
+        acc_bias(Eigen::Vector3d::Zero()),
+        orientation_null(Eigen::Vector4d(0, 0, 0, 1)),
+        position_null(Eigen::Vector3d::Zero()),
+        velocity_null(Eigen::Vector3d::Zero()) {}
 
-    IMUState(const StateIDType &new_id) : id(new_id), time(0),
-                                            orientation(Eigen::Vector4d(0, 0, 0, 1)),
-                                            position(Eigen::Vector3d::Zero()),
-                                            velocity(Eigen::Vector3d::Zero()),
-                                            gyro_bias(Eigen::Vector3d::Zero()),
-                                            acc_bias(Eigen::Vector3d::Zero()),
-                                            orientation_null(Eigen::Vector4d(0, 0, 0, 1)),
-                                            position_null(Eigen::Vector3d::Zero()),
-                                            velocity_null(Eigen::Vector3d::Zero()) {}
+    IMUState(const StateIDType &new_id)
+        : id(new_id), time(0),
+        orientation(Eigen::Vector4d(0, 0, 0, 1)),
+        position(Eigen::Vector3d::Zero()),
+        velocity(Eigen::Vector3d::Zero()),
+        gyro_bias(Eigen::Vector3d::Zero()),
+        acc_bias(Eigen::Vector3d::Zero()),
+        orientation_null(Eigen::Vector4d(0, 0, 0, 1)),
+        position_null(Eigen::Vector3d::Zero()),
+        velocity_null(Eigen::Vector3d::Zero()) {}
 };
 
 typedef IMUState::StateIDType StateIDType;

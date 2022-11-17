@@ -13,8 +13,9 @@ namespace msckf_vio
 namespace utils
 {
 
-Eigen::Isometry3d getTransformEigen(const ros::NodeHandle &nh,
-                                    const std::string &field)
+// 从ros获取参数
+Eigen::Isometry3d getTransformEigen(
+    const ros::NodeHandle &nh, const std::string &field)
 {
     Eigen::Isometry3d T;
     cv::Mat c = getTransformCV(nh, field);
@@ -34,8 +35,8 @@ Eigen::Isometry3d getTransformEigen(const ros::NodeHandle &nh,
     return T;
 }
 
-cv::Mat getTransformCV(const ros::NodeHandle &nh,
-                        const std::string &field)
+cv::Mat getTransformCV(
+    const ros::NodeHandle &nh, const std::string &field)
 {
     cv::Mat T;
     try
@@ -75,8 +76,8 @@ cv::Mat getVec16Transform(const ros::NodeHandle &nh,
     return T;
 }
 
-cv::Mat getKalibrStyleTransform(const ros::NodeHandle &nh,
-                                const std::string &field)
+cv::Mat getKalibrStyleTransform(
+    const ros::NodeHandle &nh, const std::string &field)
 {
     cv::Mat T = cv::Mat::eye(4, 4, CV_64FC1);
     XmlRpc::XmlRpcValue lines;
