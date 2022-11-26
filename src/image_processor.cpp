@@ -1673,10 +1673,12 @@ void ImageProcessor::drawFeaturesStereo()
     if (debug_stereo_pub.getNumSubscribers() > 0)
     {
         // Colors for different features.
-        // 跟踪的点是蓝色的
+        // 跟踪的点是绿色的
         Scalar tracked(0, 255, 0);
+        // 新点是金色的
         Scalar new_feature(0, 255, 255);
 
+        // 网格大小
         static int grid_height =
             cam0_curr_img_ptr->image.rows / processor_config.grid_row;
         static int grid_width =
