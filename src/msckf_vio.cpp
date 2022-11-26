@@ -1293,11 +1293,16 @@ void MsckfVio::featureJacobian(
 
     // Project the residual and Jacobians onto the nullspace
     // of H_fj.
-    // TOSEE 测试是否跟QR分解一个效果
-    // 其实就是
+    // 零空间投影
     JacobiSVD<MatrixXd> svd_helper(H_fj, ComputeFullU | ComputeThinV);
     MatrixXd A = svd_helper.matrixU().rightCols(
         jacobian_row_size - 3);
+
+    // 上面的效果跟QR分解一样，下面的代码可以测试打印对比
+    // Eigen::ColPivHouseholderQR<MatrixXd> qr(H_fj);
+	// MatrixXd Q = qr.matrixQ();
+    // std::cout << "spqr_helper.matrixQ(): " << std::endl << Q << std::endl << std::endl;
+    // std::cout << "A: " << std::endl << A << std::endl;
 
     // 0空间投影
     H_x = A.transpose() * H_xj;
@@ -1576,19 +1581,28 @@ void MsckfVio::pruneCamStateBuffer()
     return;
 }
 
+/**
+ * @brief 找出该删的相机状态的id
+ * @param  rm_cam_state_ids 要删除的相机状态id
+ */
 void MsckfVio::findRedundantCamStates(
     vector<StateIDType> &rm_cam_state_ids)
 {
-
     // Move the iterator to the key position.
+    // 1. 找到倒数第四个相机状态，作为关键状态
     auto key_cam_state_iter = state_server.cam_states.end();
     for (int i = 0; i < 4; ++i)
         --key_cam_state_iter;
+
+    // 倒数第三个相机状态
     auto cam_state_iter = key_cam_state_iter;
     ++cam_state_iter;
+
+    // 序列中，第一个相机状态
     auto first_cam_state_iter = state_server.cam_states.begin();
 
     // Pose of the key camera state.
+    // 2. 关键状态的位姿
     const Vector3d key_position =
         key_cam_state_iter->second.position;
     const Matrix3d key_rotation = quaternionToRotation(
@@ -1596,18 +1610,22 @@ void MsckfVio::findRedundantCamStates(
 
     // Mark the camera states to be removed based on the
     // motion between states.
+    // 3. 遍历两次，每次必然删掉两个状态，有可能是相对新的，有可能是最旧的
+    // 但是永远删不到最新的
     for (int i = 0; i < 2; ++i)
     {
+        // 从倒数第三个开始
         const Vector3d position =
             cam_state_iter->second.position;
         const Matrix3d rotation = quaternionToRotation(
             cam_state_iter->second.orientation);
 
+        // 计算相对于关键相机状态的平移与旋转
         double distance = (position - key_position).norm();
-        double angle = AngleAxisd(
-                            rotation * key_rotation.transpose())
-                            .angle();
+        double angle = AngleAxisd(rotation * key_rotation.transpose()).angle();
 
+        // 判断大小以及跟踪率，就是cam_state_iter这个状态与关键相机状态的相似度，且当前的点跟踪率很高
+        // 删去这个帧，否则删掉最老的
         if (angle < rotation_threshold &&
             distance < translation_threshold &&
             tracking_rate > tracking_rate_threshold)
@@ -1623,6 +1641,7 @@ void MsckfVio::findRedundantCamStates(
     }
 
     // Sort the elements in the output vector.
+    // 4. 排序
     sort(rm_cam_state_ids.begin(), rm_cam_state_ids.end());
 
     return;
@@ -1719,6 +1738,7 @@ void MsckfVio::publish(const ros::Time &time)
 {
 
     // Convert the IMU frame to the body frame.
+    // 1. 计算body坐标，因为imu与body相对位姿是单位矩阵，所以就是imu的坐标
     const IMUState &imu_state = state_server.imu_state;
     Eigen::Isometry3d T_i_w = Eigen::Isometry3d::Identity();
     T_i_w.linear() = quaternionToRotation(
@@ -1732,6 +1752,7 @@ void MsckfVio::publish(const ros::Time &time)
         IMUState::T_imu_body.linear() * imu_state.velocity;
 
     // Publish tf
+    // 2. 发布tf，实时的位姿，没有轨迹，没有协方差
     if (publish_tf)
     {
         tf::Transform T_b_w_tf;
@@ -1741,6 +1762,7 @@ void MsckfVio::publish(const ros::Time &time)
     }
 
     // Publish the odometry
+    // 3. 发布位姿，能在rviz留下轨迹的
     nav_msgs::Odometry odom_msg;
     odom_msg.header.stamp = time;
     odom_msg.header.frame_id = fixed_frame_id;
@@ -1750,6 +1772,7 @@ void MsckfVio::publish(const ros::Time &time)
     tf::vectorEigenToMsg(body_velocity, odom_msg.twist.twist.linear);
 
     // Convert the covariance.
+    // 协方差，取出旋转平移部分
     Matrix3d P_oo = state_server.state_cov.block<3, 3>(0, 0);
     Matrix3d P_op = state_server.state_cov.block<3, 3>(0, 12);
     Matrix3d P_po = state_server.state_cov.block<3, 3>(12, 0);
@@ -1757,17 +1780,20 @@ void MsckfVio::publish(const ros::Time &time)
     Matrix<double, 6, 6> P_imu_pose = Matrix<double, 6, 6>::Zero();
     P_imu_pose << P_pp, P_po, P_op, P_oo;
 
+    // 转下坐标，但是这里都是单位矩阵
     Matrix<double, 6, 6> H_pose = Matrix<double, 6, 6>::Zero();
     H_pose.block<3, 3>(0, 0) = IMUState::T_imu_body.linear();
     H_pose.block<3, 3>(3, 3) = IMUState::T_imu_body.linear();
     Matrix<double, 6, 6> P_body_pose = H_pose *
                                         P_imu_pose * H_pose.transpose();
 
+    // 填充协方差
     for (int i = 0; i < 6; ++i)
         for (int j = 0; j < 6; ++j)
             odom_msg.pose.covariance[6 * i + j] = P_body_pose(i, j);
 
     // Construct the covariance for the velocity.
+    // 速度协方差
     Matrix3d P_imu_vel = state_server.state_cov.block<3, 3>(6, 6);
     Matrix3d H_vel = IMUState::T_imu_body.linear();
     Matrix3d P_body_vel = H_vel * P_imu_vel * H_vel.transpose();
@@ -1775,10 +1801,12 @@ void MsckfVio::publish(const ros::Time &time)
         for (int j = 0; j < 3; ++j)
             odom_msg.twist.covariance[i * 6 + j] = P_body_vel(i, j);
 
+    // 发布位姿
     odom_pub.publish(odom_msg);
 
     // Publish the 3D positions of the features that
     // has been initialized.
+    // 4. 发布点云
     boost::shared_ptr<pcl::PointCloud<pcl::PointXYZ>> feature_msg_ptr(
         new pcl::PointCloud<pcl::PointXYZ>());
     feature_msg_ptr->header.frame_id = fixed_frame_id;
