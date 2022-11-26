@@ -1293,11 +1293,16 @@ void MsckfVio::featureJacobian(
 
     // Project the residual and Jacobians onto the nullspace
     // of H_fj.
-    // TOSEE 测试是否跟QR分解一个效果
-    // 其实就是
+    // 零空间投影
     JacobiSVD<MatrixXd> svd_helper(H_fj, ComputeFullU | ComputeThinV);
     MatrixXd A = svd_helper.matrixU().rightCols(
         jacobian_row_size - 3);
+
+    // 上面的效果跟QR分解一样，下面的代码可以测试打印对比
+    // Eigen::ColPivHouseholderQR<MatrixXd> qr(H_fj);
+	// MatrixXd Q = qr.matrixQ();
+    // std::cout << "spqr_helper.matrixQ(): " << std::endl << Q << std::endl << std::endl;
+    // std::cout << "A: " << std::endl << A << std::endl;
 
     // 0空间投影
     H_x = A.transpose() * H_xj;
