@@ -519,7 +519,8 @@ void ImageProcessor::predictFeatureTracking(
         intrinsics[0], 0.0, intrinsics[2],
         0.0, intrinsics[1], intrinsics[3],
         0.0, 0.0, 1.0);
-    // 2. 投到归一化坐标，旋转，再转回像素坐标，因为是同一个相机不需要去畸变什么的
+    // 2. 投到归一化坐标，旋转，再转回像素坐标
+    // 没有去畸变，反正只是帮助预测，又不是定死了的位置，节省计算资源
     cv::Matx33f H = K * R_p_c * K.inv();
 
     for (int i = 0; i < input_pts.size(); ++i)
