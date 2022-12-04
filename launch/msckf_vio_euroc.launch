@@ -1,17 +1,20 @@
 <launch>
 
+  <!-- 定义变量与路径  -->
   <arg name="robot" default="firefly_sbx"/>
   <arg name="fixed_frame_id" default="world"/>
   <arg name="calibration_file"
     default="$(find msckf_vio)/config/camchain-imucam-euroc.yaml"/>
 
   <!-- Image Processor Nodelet  -->
+  <!-- 执行前端，传递参数  -->
   <include file="$(find msckf_vio)/launch/image_processor_euroc.launch">
     <arg name="robot" value="$(arg robot)"/>
     <arg name="calibration_file" value="$(arg calibration_file)"/>
   </include>
 
   <!-- Msckf Vio Nodelet  -->
+  <!-- 执行后，传递参数  -->
   <group ns="$(arg robot)">
     <node pkg="nodelet" type="nodelet" name="vio"
       args='standalone msckf_vio/MsckfVioNodelet'

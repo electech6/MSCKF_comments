@@ -52,7 +52,7 @@ bool ImageProcessor::loadParameters()
     nh.param<string>("cam0/distortion_model", cam0_distortion_model, string("radtan"));
     nh.param<string>("cam1/distortion_model", cam1_distortion_model, string("radtan"));
 
-    // 2. 像素分辨率
+    // 2. 像素分辨率，没用
     vector<int> cam0_resolution_temp(2);
     nh.getParam("cam0/resolution", cam0_resolution_temp);
     cam0_resolution[0] = cam0_resolution_temp[0];
@@ -111,7 +111,7 @@ bool ImageProcessor::loadParameters()
     t_cam1_imu = -R_imu_cam1.t() * t_imu_cam1;
 
     // Processor parameters
-    // 6. 这个处理图像线程所用的参数
+    // 6.处理图像线程所用的参数
     // 网格数量
     nh.param<int>("grid_row", processor_config.grid_row, 4);
     nh.param<int>("grid_col", processor_config.grid_col, 4);
@@ -130,6 +130,8 @@ bool ImageProcessor::loadParameters()
                     processor_config.fast_threshold, 20);
     nh.param<int>("max_iteration",
                     processor_config.max_iteration, 30);
+    
+    // 光流提取所用的参数
     nh.param<double>("track_precision",
                         processor_config.track_precision, 0.01);
     nh.param<double>("ransac_threshold",
@@ -230,7 +232,7 @@ bool ImageProcessor::initialize()
         return false;
     ROS_INFO("Finish loading ROS parameters...");
 
-    // 2. 特征提取初始化
+    // 2. 特征提取初始化，opencv fast角点
     detector_ptr = FastFeatureDetector::create(processor_config.fast_threshold);
 
     // 3. 声明消息的接收与发送
@@ -369,8 +371,21 @@ void ImageProcessor::createImagePyramids()
     // 第2个是长宽缩小1倍的图像 376*240
     // 第4个在第二个的基础上又缩小一倍
     // 第6个也是
-    // patch_size表示卷积处理窗口
-    // BORDER_REFLECT_101 BORDER_CONSTANT 边缘处理，具体可自查，属于图像处理的范畴
+
+    // patch_size表示卷积处理窗口，必须不少于calcOpticalFlowPyrLK的winSize参数。
+    // @param withDerivatives 设置为每个金字塔等级预计算梯度。 如果金字塔是在没有梯度的情况下构建的，那么calcOpticalFlowPyrLK将在内部对其进行计算
+    // @param pyrBorder 金字塔图层的边框模式
+    // @param derivBorder 梯度边框模式
+    // @param tryReuseInputImage put ROI of input image into the pyramid if possible. You can pass false
+    // to force data copying.
+    // @return number of levels in constructed pyramid. Can be less than maxLevel.
+
+    // 1)BORDER_REPLICATE:重复：                    aaaaaa|abcdefgh|hhhhhhh
+    // 2)BORDER_REFLECT:反射:                       fedcba|abcdefgh|hgfedcb
+    // 3)BORDER_REFLECT_101:反射101:                gfedcb|abcdefgh|gfedcba
+    // 4)BORDER_WRAP:外包装：                       cdefgh|abcdefgh|abcdefg
+    // 5)BORDER_CONSTANT:常量复制：                 iiiiii|abcdefgh|iiiiiii(i的值由后一个参数Scalar()确定，如Scalar::all(0) )
+    // borderValue:若上一参数为BORDER_CONSTANT，则由此参数确定补充上去的像素值。可选用默认值。
     buildOpticalFlowPyramid(
         curr_cam0_img, curr_cam0_pyramid_,
         Size(processor_config.patch_size, processor_config.patch_size),
@@ -404,7 +419,7 @@ void ImageProcessor::initializeFirstFrame()
     static int grid_width = img.cols / processor_config.grid_col;
 
     // Detect new features on the frist image.
-    // 2. 计算原图fast特征点，目前还没用到金字塔
+    // 2. 计算原图fast特征点
     vector<KeyPoint> new_features(0);
     detector_ptr->detect(img, new_features);
 
@@ -598,7 +613,7 @@ void ImageProcessor::trackFeatures()
         TermCriteria(TermCriteria::COUNT + TermCriteria::EPS,
                         processor_config.max_iteration,
                         processor_config.track_precision),
-        cv::OPTFLOW_USE_INITIAL_FLOW);
+        cv::OPTFLOW_USE_INITIAL_FLOW);  // OPTFLOW_USE_INITIAL_FLOW使用存储在curr_cam0_points中的初始估计值
 
     // Mark those tracked points out of the image region
     // as untracked.
@@ -749,7 +764,8 @@ void ImageProcessor::trackFeatures()
  * @param  inlier_markers 内点
  * @see ImageProcessor::addNewFeatures()  ImageProcessor::trackFeatures()  ImageProcessor::initializeFirstFrame()
  */
-void ImageProcessor::stereoMatch(const vector<cv::Point2f> &cam0_points, vector<cv::Point2f> &cam1_points, vector<unsigned char> &inlier_markers)
+void ImageProcessor::stereoMatch(
+    const vector<cv::Point2f> &cam0_points, vector<cv::Point2f> &cam1_points, vector<unsigned char> &inlier_markers)
 {
 
     if (cam0_points.size() == 0)
@@ -767,7 +783,7 @@ void ImageProcessor::stereoMatch(const vector<cv::Point2f> &cam0_points, vector<
         undistortPoints(cam0_points, cam0_intrinsics, cam0_distortion_model, cam0_distortion_coeffs, cam0_points_undistorted, R_cam0_cam1);
 
         // 得到在右相机上面带畸变的像素点
-        // FIXME 有了这些点的归一化坐标后做投影，这里有个疑问，平移呢？ 只有旋转无平移额，可能这里就是提供个初值？？？
+        // 有了这些点的归一化坐标后做投影
         cam1_points = distortPoints(cam0_points_undistorted, cam1_intrinsics, cam1_distortion_model, cam1_distortion_coeffs);
     }
 
@@ -1030,9 +1046,9 @@ void ImageProcessor::pruneGridFeatures()
  * @brief 根据图像点的像素坐标、相机内参矩阵、畸变模型和系数，得到图像点在相机系下去畸变的像素坐标，如果使用默认的最后两个参数则是归一化坐标
  * @param  pts_in 输入像素点
  * @param  intrinsics fx, fy, cx, cy
- * @param  distortion_model 相机模型，鱼眼或者针孔
+ * @param  distortion_model 相机畸变模型
  * @param  distortion_coeffs 畸变系数
- * @param  pts_out 输出矫正后的像素点
+ * @param  pts_out 输出矫正后的像素点（归一化的点）
  * @param  rectification_matrix R矩阵
  * @param  new_intrinsics 矫正后的内参矩阵
  */
@@ -1180,8 +1196,8 @@ void ImageProcessor::integrateImuData(Matx33f &cam0_R_p_c, Matx33f &cam1_R_p_c)
     cam0_R_p_c = cam0_R_p_c.t();
     cam1_R_p_c = cam1_R_p_c.t();
 
-    // 首先 假设Rwp 表示上一帧到世界的旋转 我们用imu预积分了角度 得到了Rpc 表示 从p到c的旋转
-    // 预积分都是右乘所以Rwc = Rwp * Rpc
+    // 首先 假设Rwp 表示上一帧到世界的旋转 我们用imu积分了角度 得到了Rwc 表示 从c到w的旋转Rwc = Rwp * Rpc
+    // 积分都是右乘所以Rwc = Rwp * Rpc
     // Pc表示当前坐标系下的点  Pp表示上一帧坐标系下的点
     // 有 Rwp * Rpc * Pc = Rwp * Pp
     // 推出Pc = Rpc.t * Pp
