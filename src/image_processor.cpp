@@ -1226,7 +1226,8 @@ void ImageProcessor::rescalePoints(vector<Point2f> &pts1, vector<Point2f> &pts2,
         scaling_factor += sqrt(pts1[i].dot(pts1[i]));
         scaling_factor += sqrt(pts2[i].dot(pts2[i]));
     }
-    // 个数/和 × 1.414
+    // 个数/和 × 1.414， 这里面为什么还有个根号2呢，前面得出的尺度系数是在斜边的基础上求的
+    // 但实际应用的时候是长宽级别的，所以要除根号2
     scaling_factor = (pts1.size() + pts2.size()) / scaling_factor * sqrt(2.0f);
     // 每个点乘这个数
     for (int i = 0; i < pts1.size(); ++i)
@@ -1264,7 +1265,7 @@ void ImageProcessor::twoPointRansac(
     double norm_pixel_unit = 2.0 / (intrinsics[0] + intrinsics[1]);
     // ransac迭代次数
     // success_probability 表示希望RANSAC得到正确模型的概率
-    // 0.7 理论上应该是取得点数占总点数的比例，但是这里指定了总数
+    // 认为内点比率是0.7，每次取两对点
     int iter_num = static_cast<int>(ceil(log(1 - success_probability) / log(1 - 0.7 * 0.7)));
 
     // Initially, mark all points as inliers.
@@ -1292,8 +1293,9 @@ void ImageProcessor::twoPointRansac(
 
     // Normalize the points to gain numerical stability.
     float scaling_factor = 0.0f;
+    // 求出两波点的平均尺度，每个点再做尺度归一化
     rescalePoints(pts1_undistorted, pts2_undistorted, scaling_factor);
-    // 焦距倒数乘尺度
+    // 焦距倒数乘尺度，阈值与点的坐标尺度保持一致
     norm_pixel_unit *= scaling_factor;
 
     // Compute the difference between previous and current points,
@@ -1306,7 +1308,7 @@ void ImageProcessor::twoPointRansac(
     // Mark the point pairs with large difference directly.
     // BTW, the mean distance of the rest of the point pairs
     // are computed.
-    // 4. 通过上面的差值剔除一些较大的，同时计算保留下来的差值的均值
+    // 4. 通过上面的差值剔除一些较大的，因为要做RANSAC，所以尽量的先把外点剔除一部分
     double mean_pt_distance = 0.0;
     int raw_inlier_cntr = 0;
     for (int i = 0; i < pts_diff.size(); ++i)
@@ -1326,12 +1328,14 @@ void ImageProcessor::twoPointRansac(
             ++raw_inlier_cntr;
         }
     }
+    // 计算保留下来的差值的均值
     mean_pt_distance /= raw_inlier_cntr;
 
     // If the current number of inliers is less than 3, just mark
     // all input as outliers. This case can happen with fast
     // rotation where very few features are tracked.
-    // 5. 快速旋转会丢失
+    // 5. 快速旋转将导致内点很少，返回。
+    // 前端没有所谓的是否丢失，最多是没有点跟踪上，导致后端没办法更新而已
     if (raw_inlier_cntr < 3)
     {
         for (auto &marker : inlier_markers)
@@ -1345,8 +1349,8 @@ void ImageProcessor::twoPointRansac(
     // work. If so, the distance between the matched points will
     // be almost 0.
     // if (mean_pt_distance < inlier_error*norm_pixel_unit) {
-    // 6. 如果平均差较小， 一个像素 ，就不做ransac了，使用经验值进一步剔除外点
-    // 判断运动退化，即几乎没有平移的情况
+    // 6. 如果平均差较小， 一个像素 ，就不做ransac了，因为此时平移几乎是0，运动退化，没必要在估计t了，所以不用下面的RANSAC
+    // 使用经验值进一步剔除外点
     if (mean_pt_distance < norm_pixel_unit)
     {
         // ROS_WARN_THROTTLE(1.0, "Degenerated motion...");
@@ -1419,11 +1423,10 @@ void ImageProcessor::twoPointRansac(
         // 这个越小说明离0越近
         int base_indicator = min_element(coeff_l1_norm.begin(), coeff_l1_norm.end()) - coeff_l1_norm.begin();
 
-        // 我们知道一个矩阵有逆的前提是行列式不为0
-        // 矩阵A的迹（用tr(A)表示）就等于A的特征值的总和
-        // 而特征值的乘积接近0，则矩阵的逆越离谱
-        // 因此保证特征值的乘积的绝对值要足够大，那么可以理解成迹的绝对值也要足够大
-        // 因此选择比较大的两个算逆
+        // 这里想要取其中两个做成方阵，到底选哪两个？
+        // 首先不管选哪两个，得出的方阵由于有误差的存在，它是绝对可逆的
+        // 所以挑选了数值相对较大的两个，因为在相同误差下，数值大的误差比例小
+        // 求出的逆更加“可靠”
         Vector3d model(0.0, 0.0, 0.0);
         if (base_indicator == 0)
         {
@@ -1462,13 +1465,15 @@ void ImageProcessor::twoPointRansac(
         {
             if (inlier_markers[i] == 0)
                 continue;
+
+            // 点越准，这个error越接近0
             if (std::abs(error(i)) < inlier_error * norm_pixel_unit)
                 inlier_set.push_back(i);
         }
 
         // If the number of inliers is small, the current
         // model is probably wrong.
-        // 内点数量太少，跳过这组结果
+        // 内点数量太少，跳过这组结果，换其他2个点再计算
         if (inlier_set.size() < 0.2 * pts1_undistorted.size())
             continue;
 
@@ -1489,6 +1494,7 @@ void ImageProcessor::twoPointRansac(
         {
             MatrixXd A(inlier_set.size(), 2);
             A << coeff_ty_better, coeff_tz_better;
+            // 计算伪逆
             Vector2d solution =
                 (A.transpose() * A).inverse() * A.transpose() * (-coeff_tx_better);
             model_better(0) = 1.0;
