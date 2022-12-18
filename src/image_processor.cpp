@@ -1275,7 +1275,7 @@ void ImageProcessor::twoPointRansac(
     // Undistort all the points.
     vector<Point2f> pts1_undistorted(pts1.size());
     vector<Point2f> pts2_undistorted(pts2.size());
-    // 1. 两批点全部投到矫正后的归一化像素坐标下
+    // 1. 两批点全部投到矫正后的归一化平面坐标下
     undistortPoints(pts1, intrinsics, distortion_model, distortion_coeffs, pts1_undistorted);
     undistortPoints(pts2, intrinsics, distortion_model, distortion_coeffs, pts2_undistorted);
 
@@ -1300,7 +1300,7 @@ void ImageProcessor::twoPointRansac(
 
     // Compute the difference between previous and current points,
     // which will be used frequently later.
-    // 3. 计算对应的两批点的像素差
+    // 3. 计算对应的两批点在尺度归一化的坐标差
     vector<Point2d> pts_diff(pts1_undistorted.size());
     for (int i = 0; i < pts1_undistorted.size(); ++i)
         pts_diff[i] = pts1_undistorted[i] - pts2_undistorted[i];
@@ -1396,6 +1396,8 @@ void ImageProcessor::twoPointRansac(
         // 7.3 选择非重复的两个点
         int select_idx1 = random_gen.uniformInteger(0, raw_inlier_idx.size() - 1);
         int select_idx_diff = random_gen.uniformInteger(1, raw_inlier_idx.size() - 1);
+        // 到这里上面两个数有可能出现重复的
+        // 经过下面处理实现获取两个不相等的id
         int select_idx2 = 
             select_idx1 + select_idx_diff < raw_inlier_idx.size() ?
                 select_idx1 + select_idx_diff :
@@ -1579,8 +1581,12 @@ void ImageProcessor::publish()
     vector<Point2f> curr_cam0_points_undistorted(0);
     vector<Point2f> curr_cam1_points_undistorted(0);
     // 2. 去畸变，注意！！！！！这里的输入最后的相机内参矩阵没有，所以输出为归一化的坐标
-    undistortPoints(curr_cam0_points, cam0_intrinsics, cam0_distortion_model, cam0_distortion_coeffs, curr_cam0_points_undistorted);
-    undistortPoints(curr_cam1_points, cam1_intrinsics, cam1_distortion_model, cam1_distortion_coeffs, curr_cam1_points_undistorted);
+    undistortPoints(
+        curr_cam0_points, cam0_intrinsics, cam0_distortion_model,
+        cam0_distortion_coeffs, curr_cam0_points_undistorted);
+    undistortPoints(
+        curr_cam1_points, cam1_intrinsics, cam1_distortion_model,
+        cam1_distortion_coeffs, curr_cam1_points_undistorted);
 
     // 3. 发送消息，存放的是所有点以及id
     for (int i = 0; i < curr_ids.size(); ++i)
