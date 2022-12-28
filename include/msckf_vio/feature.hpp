@@ -42,10 +42,16 @@ struct Feature
      */
     struct OptimizationConfig
     {
+        // 位移是否足够，用于判断点是否能做三角化
         double translation_threshold;
+        // huber参数
         double huber_epsilon;
+        // 修改量阈值，优化的每次迭代都会有更新量，这个量如果太小则表示与目标值接近
         double estimation_precision;
+        // LM算法lambda的初始值
         double initial_damping;
+
+        // 内外轮最大迭代次数
         int outer_loop_max_iteration;
         int inner_loop_max_iteration;
 
@@ -74,7 +80,7 @@ struct Feature
     /**
      * @brief cost Compute the cost of the camera observations
      * @param T_c0_c1 A rigid body transformation takes
-     *    a vector in c0 frame to ci frame. 左右目外参
+     *    a vector in c0 frame to ci frame.
      * @param x The current estimation.
      * @param z The ith measurement of the feature j in ci frame.
      * @return e The cost of this observation.
@@ -149,6 +155,7 @@ struct Feature
 
     // Store the observations of the features in the
     // state_id(key)-image_coordinates(value) manner.
+    // 升序排序的map
     std::map<StateIDType, Eigen::Vector4d, std::less<StateIDType>,
             Eigen::aligned_allocator<std::pair<const StateIDType, Eigen::Vector4d>>>
         observations;
@@ -180,22 +187,25 @@ typedef std::map<FeatureIDType, Feature, std::less<int>,
 bool Feature::checkMotion(
     const CamStateServer &cam_states) const
 {
-
     // 1. 取出对应的始末帧id
     const StateIDType &first_cam_id = observations.begin()->first;
     const StateIDType &last_cam_id = (--observations.end())->first;
 
     // 2. 分别赋值位姿
     Eigen::Isometry3d first_cam_pose;
+    // Rwc
     first_cam_pose.linear() =
         quaternionToRotation(cam_states.find(first_cam_id)->second.orientation).transpose();
+    
+    // twc
     first_cam_pose.translation() =
         cam_states.find(first_cam_id)->second.position;
 
     Eigen::Isometry3d last_cam_pose;
-    last_cam_pose.linear() = quaternionToRotation(
-                                    cam_states.find(last_cam_id)->second.orientation)
-                                    .transpose();
+    // Rwc
+    last_cam_pose.linear() =
+        quaternionToRotation(cam_states.find(last_cam_id)->second.orientation).transpose();
+    // twc
     last_cam_pose.translation() =
         cam_states.find(last_cam_id)->second.position;
 
@@ -214,7 +224,8 @@ bool Feature::checkMotion(
     // and the last frame. We assume the first frame and
     // the last frame will provide the largest motion to
     // speed up the checking process.
-    // 4. 求出始末两帧在世界坐标系下的位移
+    // 4. 求出始末两帧在世界坐标系下的位移（这段判断非常精彩！！！！）
+    // 始指向末的向量
     Eigen::Vector3d translation =
         last_cam_pose.translation() - first_cam_pose.translation();
 
@@ -224,10 +235,11 @@ bool Feature::checkMotion(
     double parallel_translation =
         translation.transpose() * feature_direction;
 
-    // 这块可以自己画一画，当两个向量的方向相同，这个值是0
-    // 但是两个方向相反时这个值最大
-    // 个人认为这里略有欠妥，因为这个函数的目的是看看是否有足够的运动来做三角化
-    // 但是这个为什么反向就可以，同向就不行？感觉这里应该加个判断夹角，每次取的是锐角就正常了
+    // 这块直接理解比较抽象，使用带入法，分别带入 0° 180° 跟90°
+    // 当两个向量的方向相同 0°，这个值是0
+    // 两个方向相反时 180°，这个值也是0
+    // 90°时， cos为0，也就是看translation是否足够大
+    // 所以这块的判断即考虑了角度，同时考虑了位移。即使90°但是位移不够也不做三角化
     Eigen::Vector3d orthogonal_translation =
         translation - parallel_translation * feature_direction;
 
@@ -239,7 +251,7 @@ bool Feature::checkMotion(
 }
 
 /**
- * @brief initializePosition 三角化
+ * @brief initializePosition 三角化+LM优化
  * @param cam_states 所有参与计算的相机位姿
  * @return 是否三角化成功
  */
@@ -318,7 +330,7 @@ bool Feature::initializePosition(
     }
 
     // Outer loop.
-    // 5. LM优化开始
+    // 5. LM优化开始， 优化三维点坐标，不优化位姿，比较简单
     do
     {
         // A是  J^t * J  B是 J^t * r
@@ -336,6 +348,9 @@ bool Feature::initializePosition(
             double w;
 
             // 计算一目相机观测的雅可比与误差
+            // J 归一化坐标误差相对于三维点的雅可比
+            // r
+            // w 权重，同信息矩阵
             jacobian(cam_poses[i], solution, measurements[i], J, r, w);
 
             // 鲁棒核约束
@@ -376,7 +391,7 @@ bool Feature::initializePosition(
             }
 
             // 如果更新后误差比之前小，说明确实是往好方向发展
-            // 我们高斯牛顿的JtJ比较接近真实情况所以减少阻尼，增大步长，加快收敛
+            // 我们高斯牛顿的JtJ比较接近真实情况所以减少阻尼，增大步长，delta变大，加快收敛
             if (new_cost < total_cost)
             {
                 is_cost_reduced = true;
@@ -384,7 +399,9 @@ bool Feature::initializePosition(
                 total_cost = new_cost;
                 lambda = lambda / 10 > 1e-10 ? lambda / 10 : 1e-10;
             }
-            // 如果不行，那么不要这次迭代的结果，说明高斯牛顿的JtJ不接近二阶的海森矩阵，那么增大阻尼，减小步长
+            // 如果不行，那么不要这次迭代的结果
+            // 说明高斯牛顿的JtJ不接近二阶的海森矩阵
+            // 那么增大阻尼，减小步长，delta变小
             // 并且算法接近一阶的最速下降法
             else
             {
@@ -399,6 +416,7 @@ bool Feature::initializePosition(
 
         inner_loop_cntr = 0;
 
+    // 直到迭代次数到了或者更新量足够小了
     } while (outer_loop_cntr++ <
                     optimization_config.outer_loop_max_iteration &&
                 delta_norm > optimization_config.estimation_precision);
@@ -436,8 +454,8 @@ bool Feature::initializePosition(
 
 /**
  * @brief cost 计算误差
- * @param T_c0_ci 相对位姿
- * @param x 三维点坐标
+ * @param T_c0_ci 相对位姿，Tcic0 每一个单向机到第一个观测的相机的T
+ * @param x 三维点坐标(x/z, y/z, 1/z)
  * @param z ci下的观测归一化坐标
  * @param e 误差
  */
@@ -471,8 +489,8 @@ void Feature::cost(
 
 /**
  * @brief jacobian 求一个观测对应的雅可比
- * @param T_c0_ci 相对位姿
- * @param x 三维点坐标
+ * @param T_c0_ci 相对位姿，Tcic0 每一个单向机到第一个观测的相机的T
+ * @param x 三维点坐标(x/z, y/z, 1/z)
  * @param z 归一化坐标
  * @param J 雅可比 归一化坐标误差相对于三维点的
  * @param r 误差
@@ -487,9 +505,9 @@ void Feature::jacobian(
 {
 
     // Compute hi1, hi2, and hi3 as Equation (37).
-    const double &alpha = x(0);
-    const double &beta = x(1);
-    const double &rho = x(2);
+    const double &alpha = x(0);  // x/z
+    const double &beta = x(1);  // y/z
+    const double &rho = x(2);  // 1/z
 
     // h 等于 (R * P + t) * 1/Pz
     // h1    | R11 R12 R13    alpha / rho       t1    |
@@ -503,7 +521,8 @@ void Feature::jacobian(
 
     // Compute the Jacobian.
     // 首先明确一下误差与三维点的关系
-    // 下面的r是误差，我们要求r对三维点的雅可比，其中z是观测，与三维点坐标无关
+    // 下面的r是误差 r = z_hat - z;  Eigen::Vector2d z_hat(h1 / h3, h2 / h3)
+    // 我们要求r对三维点的雅可比，其中z是观测，与三维点坐标无关
     // 因此相当于求归一化坐标相对于 alpha beta rho的雅可比，首先要求出他们之间的关系
     // 归一化坐标设为x y
     // x = h1/h3 y = h2/h3
@@ -536,6 +555,8 @@ void Feature::jacobian(
     double e = r.norm();
     if (e <= optimization_config.huber_epsilon)
         w = 1.0;
+    // 如果误差大于optimization_config.huber_epsilon但是没超过他的2倍，那么会放大权重w>1
+    // 如果误差大的离谱，超过他的2倍，缩小他的权重
     else
         w = std::sqrt(2.0 * optimization_config.huber_epsilon / e);
 

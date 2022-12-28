@@ -739,7 +739,6 @@ void MsckfVio::processModel(
     return;
 }
 
-// TOSEE
 /**
  * @brief 来一个新的imu数据做积分
  * @param  dt 相对上一个数据的间隔时间
@@ -752,8 +751,8 @@ void MsckfVio::predictNewState(
 
     // TODO: Will performing the forward integration using
     //    the inverse of the quaternion give better accuracy?
-    // 使用四元数的逆进行正向积分会带来更好的精度吗
 
+    // 角速度，标量
     double gyro_norm = gyro.norm();
     Matrix4d Omega = Matrix4d::Zero();
     Omega.block<3, 3>(0, 0) = -skewSymmetric(gyro);
@@ -765,6 +764,8 @@ void MsckfVio::predictNewState(
     Vector3d &p = state_server.imu_state.position;
 
     // Some pre-calculation
+    // dq_dt表示积分n到n+1
+    // dq_dt2表示积分n到n+0.5
     Vector4d dq_dt, dq_dt2;
     if (gyro_norm > 1e-5)
     {
