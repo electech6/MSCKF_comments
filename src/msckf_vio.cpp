@@ -778,10 +778,11 @@ void MsckfVio::predictNewState(
     }
     else
     {
-        // 当角增量很小时的近似，实部项没有做近似，虚部项使用了洛必达法则
+        // 当角增量很小时的近似
         dq_dt = (Matrix4d::Identity() + 0.5 * dt * Omega) * cos(gyro_norm * dt * 0.5) * q;
         dq_dt2 = (Matrix4d::Identity() + 0.25 * dt * Omega) * cos(gyro_norm * dt * 0.25) * q;
     }
+    // Rwi
     Matrix3d dR_dt_transpose = quaternionToRotation(dq_dt).transpose();
     Matrix3d dR_dt2_transpose = quaternionToRotation(dq_dt2).transpose();
 

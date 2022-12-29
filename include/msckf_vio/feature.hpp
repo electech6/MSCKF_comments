@@ -280,6 +280,7 @@ bool Feature::initializePosition(
 
         // This camera pose will take a vector from this camera frame
         // to the world frame.
+        // Twc
         Eigen::Isometry3d cam0_pose;
         cam0_pose.linear() =
             quaternionToRotation(cam_state_iter->second.orientation).transpose();
@@ -304,8 +305,9 @@ bool Feature::initializePosition(
     // Generate initial guess
     // 3. 使用首末位姿粗略计算出一个三维点坐标
     Eigen::Vector3d initial_position(0.0, 0.0, 0.0);
-    generateInitialGuess(cam_poses[cam_poses.size() - 1], measurements[0],
-                            measurements[measurements.size() - 1], initial_position);
+    generateInitialGuess(
+        cam_poses[cam_poses.size() - 1], measurements[0],
+        measurements[measurements.size() - 1], initial_position);
     // 弄成逆深度形式
     Eigen::Vector3d solution(
         initial_position(0) / initial_position(2),
@@ -320,11 +322,12 @@ bool Feature::initializePosition(
     double delta_norm = 0;
 
     // Compute the initial cost.
-    // 4. 利用初计算的点计算在各个相机下的误差
+    // 4. 利用初计算的点计算在各个相机下的误差，作为初始误差
     double total_cost = 0.0;
     for (int i = 0; i < cam_poses.size(); ++i)
     {
         double this_cost = 0.0;
+        // 计算投影误差（归一化坐标）
         cost(cam_poses[i], solution, measurements[i], this_cost);
         total_cost += this_cost;
     }
@@ -453,7 +456,7 @@ bool Feature::initializePosition(
 }
 
 /**
- * @brief cost 计算误差
+ * @brief cost 计算投影误差（归一化坐标）
  * @param T_c0_ci 相对位姿，Tcic0 每一个单向机到第一个观测的相机的T
  * @param x 三维点坐标(x/z, y/z, 1/z)
  * @param z ci下的观测归一化坐标
@@ -470,6 +473,9 @@ void Feature::cost(
     const double &rho = x(2);
 
     // h 等于  (R * P + t) * 1/Pz
+    // h1    | R11 R12 R13    alpha / rho       t1    |
+    // h2 =  | R21 R22 R23 *  beta  / rho   +   t2    |   *  rho
+    // h3    | R31 R32 R33    1 / rho           t3    |
     Eigen::Vector3d h =
         T_c0_ci.linear() * Eigen::Vector3d(alpha, beta, 1.0) +
         rho * T_c0_ci.translation();
@@ -578,7 +584,7 @@ void Feature::generateInitialGuess(
     // P2 = R21 * P1 + t21  下面省略21
     // 两边左乘P2的反对称矩阵
     // P2^ * (R * P1 + t) = 0
-    // 其中左右可以除以P2的深度，这样P2就成了z2，且P1可以分成z1 乘上我们要求的深度d
+    // 其中左右可以除以P2的深度，这样P2就成了z2，且P1可以分成z1（归一化平面） 乘上我们要求的深度d
     // 令m = R * z1
     // | 0   -1   z2y |    ( | m0 |         )
     // | 1    0  -z2x | *  ( | m1 | * d + t )  =  0
@@ -588,8 +594,10 @@ void Feature::generateInitialGuess(
     Eigen::Vector3d m = T_c1_c2.linear() * Eigen::Vector3d(z1(0), z1(1), 1.0);
 
     Eigen::Vector2d A(0.0, 0.0);
-    A(0) = m(0) - z2(0) * m(2);
-    A(1) = m(1) - z2(1) * m(2);  // 按照上面推导这里应该是负的但是不影响，因为我们下边b(1)也给取负了
+    A(0) = m(0) - z2(0) * m(2);  // 对应第二行
+
+    // 按照上面推导这里应该是负的但是不影响，因为我们下边b(1)也给取负了
+    A(1) = m(1) - z2(1) * m(2);  // 对应第一行
 
     Eigen::Vector2d b(0.0, 0.0);
     b(0) = z2(0) * T_c1_c2.translation()(2) - T_c1_c2.translation()(0);
