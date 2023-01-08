@@ -68,14 +68,19 @@ bool MsckfVio::loadParameters()
 
     nh.param<bool>("publish_tf", publish_tf, true);
     nh.param<double>("frame_rate", frame_rate, 40.0);
+    // 用于判断状态是否发散
     nh.param<double>("position_std_threshold", position_std_threshold, 8.0);
 
+    // 判断是否删除状态
     nh.param<double>("rotation_threshold", rotation_threshold, 0.2618);
     nh.param<double>("translation_threshold", translation_threshold, 0.4);
     nh.param<double>("tracking_rate_threshold", tracking_rate_threshold, 0.5);
 
     // Feature optimization parameters
-    nh.param<double>("feature/config/translation_threshold", Feature::optimization_config.translation_threshold, 0.2);
+    // 判断点是否能够做三角化，这个参数用的非常精彩
+    nh.param<double>(
+        "feature/config/translation_threshold",
+        Feature::optimization_config.translation_threshold, 0.2);
 
     // Noise related parameters
     // imu参数
@@ -107,7 +112,8 @@ bool MsckfVio::loadParameters()
     // The initial covariance of orientation and position can be
     // set to 0. But for velocity, bias and extrinsic parameters,
     // there should be nontrivial uncertainty.
-    // 初始协方差的赋值
+    // 初始协方差的赋值（误差状态的协方差）
+    // 为什么旋转平移就可以是0？因为在正式开始之前我们通过初始化找好了重力方向，确定了第一帧的位姿
     double gyro_bias_cov, acc_bias_cov, velocity_cov;
     nh.param<double>("initial_covariance/velocity", velocity_cov, 0.25);
     nh.param<double>("initial_covariance/gyro_bias", gyro_bias_cov, 1e-4);
@@ -200,7 +206,7 @@ bool MsckfVio::createRosIO()
     imu_sub = nh.subscribe("imu", 100, &MsckfVio::imuCallback, this);
     feature_sub = nh.subscribe("features", 40, &MsckfVio::featureCallback, this);
 
-    // 
+    // 接受真值，动作捕捉发来的
     mocap_odom_sub = nh.subscribe("mocap_odom", 10, &MsckfVio::mocapOdomCallback, this);
     mocap_odom_pub = nh.advertise<nav_msgs::Odometry>("gt_odom", 1);
 
@@ -263,6 +269,7 @@ void MsckfVio::imuCallback(const sensor_msgs::ImuConstPtr &msg)
             return;
         // if (imu_msg_buffer.size() < 10) return;
         // imu初始化，200个数据必须都是静止时采集的
+        // 这里面没有判断是否成功，也就是一开始如果运动会导致轨迹飘
         initializeGravityAndBias();
         is_gravity_set = true;
     }
@@ -865,12 +872,12 @@ void MsckfVio::stateAugmentation(const double &time)
     J.block<3, 3>(0, 15) = Matrix3d::Identity();
 
     // twc对Riw的左扰动导数
-    // twc = twi + Rwi * Exp(-φ) * tic
-    //     = twi + Rwi * (I - φ^) * tic
-    //     = twi + Rwi * tic - Rwi * φ^ * tic
-    //     = twi + Rwi * tic + Rwi * tic^ * φ
-    // 这部分的偏导为 Rwi * tic^
-    // TODO 试一下 R_w_i.transpose() * skewSymmetric(t_c_i)
+    // twc = twi + Rwi * Exp(φ) * tic
+    //     = twi + Rwi * (I + φ^) * tic
+    //     = twi + Rwi * tic + Rwi * φ^ * tic
+    //     = twi + Rwi * tic - Rwi * tic^ * φ
+    // 这部分的偏导为 -Rwi * tic^     与论文一致
+    // TODO 试一下 -R_w_i.transpose() * skewSymmetric(t_c_i)
     // 其实这里可以反过来推一下当给的扰动是
     // twc = twi + Exp(-φ) * Rwi * tic
     //     = twi + (I - φ^) * Rwi * tic
@@ -878,7 +885,7 @@ void MsckfVio::stateAugmentation(const double &time)
     //     = twi + Rwi * tic + (Rwi * tic)^ * φ
     // 这样跟代码就一样了，但是上下定义的扰动方式就不同了
     J.block<3, 3>(3, 0) = skewSymmetric(R_w_i.transpose() * t_c_i);
-    // 下面是代码里自带的，说明作者这块也算了好几遍
+    // 下面是代码里自带的，论文中给出的也是下面的结果
     // J.block<3, 3>(3, 0) = -R_w_i.transpose()*skewSymmetric(t_c_i);
 
     // twc对twi的左扰动导数
@@ -1187,6 +1194,7 @@ void MsckfVio::measurementUpdate(
     // 3. 更新到imu状态量
     const Vector4d dq_imu =
         smallAngleQuaternion(delta_x_imu.head<3>());
+    // 相当于左乘dq_imu
     state_server.imu_state.orientation = quaternionMultiplication(
         dq_imu, state_server.imu_state.orientation);
     state_server.imu_state.gyro_bias += delta_x_imu.segment<3>(3);
@@ -1197,16 +1205,14 @@ void MsckfVio::measurementUpdate(
     // 外参
     const Vector4d dq_extrinsic =
         smallAngleQuaternion(delta_x_imu.segment<3>(15));
-    state_server.imu_state.R_imu_cam0 = quaternionToRotation(
-                                            dq_extrinsic) *
-                                        state_server.imu_state.R_imu_cam0;
+    state_server.imu_state.R_imu_cam0 =
+        quaternionToRotation(dq_extrinsic) * state_server.imu_state.R_imu_cam0;
     state_server.imu_state.t_cam0_imu += delta_x_imu.segment<3>(18);
 
     // Update the camera states.
     // 更新相机姿态
     auto cam_state_iter = state_server.cam_states.begin();
-    for (int i = 0; i < state_server.cam_states.size();
-            ++i, ++cam_state_iter)
+    for (int i = 0; i < state_server.cam_states.size(); ++i, ++cam_state_iter)
     {
         const VectorXd &delta_x_cam = delta_x.segment<6>(21 + i * 6);
         const Vector4d dq_cam = smallAngleQuaternion(delta_x_cam.head<3>());
@@ -1353,9 +1359,9 @@ void MsckfVio::measurementJacobian(
     // the cam0 and cam1 frame.
     Vector3d p_c0 = R_w_c0 * (p_w - t_c0_w);
     Vector3d p_c1 = R_w_c1 * (p_w - t_c1_w);
-    // p_c1 = R_c0_c1 * R_w_c0 * (p_w - t_c0_w - R_w_c1.transpose() * t_cam0_cam1)
-    //      = R_c0_c1 * (p_c0 - R_w_c0 * R_w_c1.transpose() * t_cam0_cam1)
-    //      = R_c0_c1 * (p_c0 - R_c0_c1 * t_cam0_cam1)
+    // p_c1 = R_c0_c1 * R_w_c0 * (p_w - t_c0_w + R_w_c1.transpose() * t_cam0_cam1)
+    //      = R_c0_c1 * (p_c0 + R_w_c0 * R_w_c1.transpose() * t_cam0_cam1)
+    //      = R_c0_c1 * (p_c0 + R_c0_c1 * t_cam0_cam1)
 
     // Compute the Jacobians.
     // 5. 计算雅可比

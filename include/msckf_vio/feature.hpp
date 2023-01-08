@@ -408,7 +408,7 @@ bool Feature::initializePosition(
             // 并且算法接近一阶的最速下降法
             else
             {
-                // 停止本次迭代，重新计算雅可比去算
+                
                 is_cost_reduced = false;
                 lambda = lambda * 10 < 1e12 ? lambda * 10 : 1e12;
             }

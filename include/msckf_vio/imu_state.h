@@ -38,10 +38,12 @@ struct IMUState
     // Orientation
     // Take a vector from the world frame to
     // the IMU (body) frame.
+    // Rbw
     Eigen::Vector4d orientation;
 
     // Position of the IMU (body) frame
     // in the world frame.
+    // twb
     Eigen::Vector3d position;
 
     // Velocity of the IMU (body) frame
