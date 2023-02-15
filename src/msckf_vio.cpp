@@ -577,11 +577,13 @@ void MsckfVio::batchImuProcessing(const double &time_bound)
     for (const auto &imu_msg : imu_msg_buffer)
     {
         double imu_time = imu_msg.header.stamp.toSec();
+        // 小于，说明这个数据比较旧，因为state_server.imu_state.time代表已经处理过的imu数据的时间
         if (imu_time < state_server.imu_state.time)
         {
             ++used_imu_msg_cntr;
             continue;
         }
+        // 超过的供下次使用
         if (imu_time > time_bound)
             break;
 
@@ -597,7 +599,7 @@ void MsckfVio::batchImuProcessing(const double &time_bound)
     }
 
     // Set the state ID for the new IMU state.
-    // 新的状态，更新id
+    // 新的状态，更新id，相机状态的id也根据这个赋值
     state_server.imu_state.id = IMUState::next_id++;
 
     // 删掉已经用过
@@ -620,6 +622,7 @@ void MsckfVio::processModel(
 {
 
     // Remove the bias from the measured gyro and acceleration
+    // 以引用的方式取出
     IMUState &imu_state = state_server.imu_state;
 
     // 1. imu读数减掉偏置
@@ -686,13 +689,23 @@ void MsckfVio::processModel(
     // 4. 四阶龙格库塔积分预测状态
     predictNewState(dtime, gyro, acc);
 
-    // TOSEE
-    // 5. Observability-constrained VINS 客观性约束，也就是fej问题
+    // 5. Observability-constrained VINS 可观性约束
     // Modify the transition matrix
+    // 5.1 修改phi_11
+    // imu_state.orientation_null为上一个imu数据递推后保存的
+    // 这块可能会有疑问，因为当上一个imu假如被观测更新了，
+    // 导致当前的imu状态是由更新后的上一个imu状态递推而来，但是这里的值是没有更新的，这个有影响吗
+    // 答案是没有的，因为我们更改了phi矩阵，保证了零空间
+    // 并且这里必须这么处理，因为如果使用更新后的上一个imu状态构建上一时刻的零空间
+    // 就破坏了上上一个跟上一个imu状态之间的0空间
+    // Ni-1 = phi_[i-2] * Ni-2
+    // Ni = phi_[i-1] * Ni-1^
+    // 如果像上面这样约束，那么中间的0空间就“崩了”
     Matrix3d R_kk_1 = quaternionToRotation(imu_state.orientation_null);
     Phi.block<3, 3>(0, 0) =
         quaternionToRotation(imu_state.orientation) * R_kk_1.transpose();
 
+    // 5.2 修改phi_31
     Vector3d u = R_kk_1 * IMUState::gravity;
     RowVector3d s = (u.transpose() * u).inverse() * u.transpose();
 
@@ -701,6 +714,7 @@ void MsckfVio::processModel(
         skewSymmetric(imu_state.velocity_null - imu_state.velocity) * IMUState::gravity;
     Phi.block<3, 3>(6, 0) = A1 - (A1 * u - w1) * s;
 
+    // 5.3 修改phi_51
     Matrix3d A2 = Phi.block<3, 3>(12, 0);
     Vector3d w2 =
         skewSymmetric(
@@ -710,7 +724,7 @@ void MsckfVio::processModel(
     Phi.block<3, 3>(12, 0) = A2 - (A2 * u - w2) * s;
 
     // Propogate the state covariance matrix.
-    // 6. 计算积分后的新的协方差矩阵
+    // 6. 使用0空间约束后的phi计算积分后的新的协方差矩阵
     Matrix<double, 21, 21> Q =
         Phi * G * state_server.continuous_noise_cov * G.transpose() * Phi.transpose() * dtime;
     state_server.state_cov.block<21, 21>(0, 0) =
@@ -736,7 +750,7 @@ void MsckfVio::processModel(
     state_server.state_cov = state_cov_fixed;
 
     // Update the state correspondes to null space.
-    // 9. 更新零空间
+    // 9. 更新零空间，供下个IMU来了使用
     imu_state.orientation_null = imu_state.orientation;
     imu_state.position_null = imu_state.position;
     imu_state.velocity_null = imu_state.velocity;
@@ -747,7 +761,7 @@ void MsckfVio::processModel(
 }
 
 /**
- * @brief 来一个新的imu数据做积分
+ * @brief 来一个新的imu数据做积分，应用四阶龙哥库塔法
  * @param  dt 相对上一个数据的间隔时间
  * @param  gyro 角速度减去偏置后的
  * @param  acc 加速度减去偏置后的
@@ -772,7 +786,7 @@ void MsckfVio::predictNewState(
 
     // Some pre-calculation
     // dq_dt表示积分n到n+1
-    // dq_dt2表示积分n到n+0.5
+    // dq_dt2表示积分n到n+0.5 算龙哥库塔用的
     Vector4d dq_dt, dq_dt2;
     if (gyro_norm > 1e-5)
     {
