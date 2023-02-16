@@ -574,6 +574,8 @@ void MsckfVio::batchImuProcessing(const double &time_bound)
     int used_imu_msg_cntr = 0;
 
     // 取出两帧之间的imu数据去递推位姿
+    // 这里有个细节问题，time_bound表示新图片的时间戳，
+    // 但是IMU就积分到了距time_bound最近的一个，导致时间会差一点点
     for (const auto &imu_msg : imu_msg_buffer)
     {
         double imu_time = imu_msg.header.stamp.toSec();
@@ -837,7 +839,7 @@ void MsckfVio::predictNewState(
 }
 
 /**
- * @brief 来一个新的imu数据做积分
+ * @brief 根据时间分裂出相机状态
  * @param  time 图片的时间戳
  */
 void MsckfVio::stateAugmentation(const double &time)
@@ -862,11 +864,12 @@ void MsckfVio::stateAugmentation(const double &time)
         CAMState(state_server.imu_state.id);
     CAMState &cam_state = state_server.cam_states[state_server.imu_state.id];
 
+    // 严格上讲这个时间不对，但是几乎没影响
     cam_state.time = time;
     cam_state.orientation = rotationToQuaternion(R_w_c);
     cam_state.position = t_c_w;
 
-    // 此时0空间的旋转平移还是一个东东
+    // 记录第一次被估计的数据，不能被改变，因为改变了就破坏了之前的0空间
     cam_state.orientation_null = cam_state.orientation;
     cam_state.position_null = cam_state.position;
 
@@ -934,7 +937,7 @@ void MsckfVio::stateAugmentation(const double &time)
     state_server.state_cov.block(0, old_cols, old_rows, 6) =
         state_server.state_cov.block(old_rows, 0, 6, old_cols).transpose();
 
-    // 右下角
+    // 右下角，关于相机部分的J都是0所以省略了
     state_server.state_cov.block<6, 6>(old_rows, old_cols) =
         J * P11 * J.transpose();
 
@@ -965,7 +968,8 @@ void MsckfVio::addFeatureObservations(
 
     // Add new observations for existing features or new
     // features in the map server.
-    // 2. 添加新来的点，做的花里胡哨，其实就是在现有的特征管理里面找，id已存在说明是跟踪的点，在已有的上面更新
+    // 2. 添加新来的点，做的花里胡哨，其实就是在现有的特征管理里面找，
+    // id已存在说明是跟踪的点，在已有的上面更新
     // id不存在说明新来的点，那么就新添加一个
     for (const auto &feature : msg->features)
     {
@@ -1004,10 +1008,10 @@ void MsckfVio::removeLostFeatures()
     // BTW, find the size the final Jacobian matrix and residual vector.
     int jacobian_row_size = 0;
     // FeatureIDType 这是个long long int 嗯。。。。直接当作int理解吧
-    vector<FeatureIDType> invalid_feature_ids(0);  // 无效点
-    vector<FeatureIDType> processed_feature_ids(0);  // 正在处理的点
+    vector<FeatureIDType> invalid_feature_ids(0);  // 无效点，最后要删的
+    vector<FeatureIDType> processed_feature_ids(0);  // 待参与更新的点，用完也被无情的删掉
 
-    // 便利所有特征管理里面的点，包括新进来的
+    // 遍历所有特征管理里面的点，包括新进来的
     for (auto iter = map_server.begin();
             iter != map_server.end(); ++iter)
     {
@@ -1059,6 +1063,7 @@ void MsckfVio::removeLostFeatures()
         // 也就是算重投影误差时维度将会是4 * feature.observations.size()
         // 这里为什么减3下面会提到
         jacobian_row_size += 4 * feature.observations.size() - 3;
+        // 接下来要参与优化的点加入到这个变量中
         processed_feature_ids.push_back(feature.id);
     }
 
@@ -1097,7 +1102,7 @@ void MsckfVio::removeLostFeatures()
         // 6.1 计算雅可比，计算重投影误差
         featureJacobian(feature.id, cam_state_ids, H_xj, r_j);
 
-        // 6.2 卡方检验，剔除错误点
+        // 6.2 卡方检验，剔除错误点，并不是所有点都用
         if (gatingTest(H_xj, r_j, cam_state_ids.size() - 1))
         {
             H_x.block(stack_cntr, 0, H_xj.rows(), H_xj.cols()) = H_xj;
@@ -1107,11 +1112,12 @@ void MsckfVio::removeLostFeatures()
 
         // Put an upper bound on the row size of measurement Jacobian,
         // which helps guarantee the executation time.
+        // 限制最大更新量
         if (stack_cntr > 1500)
             break;
     }
 
-    // 限制最大数量
+    // resize成实际大小
     H_x.conservativeResize(stack_cntr, H_x.cols());
     r.conservativeResize(stack_cntr);
 
@@ -1150,8 +1156,8 @@ void MsckfVio::measurementUpdate(
         SparseMatrix<double> H_sparse = H.sparseView();
 
         // Perform QR decompostion on H_sparse.
-        // TOSEE
-        // QR分解
+        // 利用H矩阵稀疏性，QR分解
+        // 这段结合零空间投影一起理解，主要作用就是降低计算量
         SPQR<SparseMatrix<double>> spqr_helper;
         spqr_helper.setSPQROrdering(SPQR_ORDERING_NATURAL);
         spqr_helper.compute(H_sparse);
@@ -1254,7 +1260,7 @@ void MsckfVio::measurementUpdate(
 /**
  * @brief 计算一个路标点的雅可比
  * @param  feature_id 路标点id
- * @param  cam_state_ids 所有的相机状态id
+ * @param  cam_state_ids 这个点对应的所有的相机状态id
  * @param  H_x 雅可比
  * @param  r 误差
  */
@@ -1268,7 +1274,7 @@ void MsckfVio::featureJacobian(
 
     // Check how many camera states in the provided camera
     // id camera has actually seen this feature.
-    // 1. 统计有效观测的相机状态
+    // 1. 统计有效观测的相机状态，因为对应的个别状态有可能被滑走了
     vector<StateIDType> valid_cam_state_ids(0);
     for (const auto &cam_id : cam_state_ids)
     {
@@ -1281,9 +1287,10 @@ void MsckfVio::featureJacobian(
 
     int jacobian_row_size = 0;
     // 行数等于4*观测数量，一个观测在双目上都有，所以是2*2
+    // 此时还没有0空间投影
     jacobian_row_size = 4 * valid_cam_state_ids.size();
 
-    // 误差相对于状态量的雅可比
+    // 误差相对于状态量的雅可比，没有约束列数，因为列数一直是最新的
     MatrixXd H_xj = MatrixXd::Zero(jacobian_row_size,
                                     21 + state_server.cam_states.size() * 6);
     // 误差相对于三维点的雅可比
@@ -1292,7 +1299,7 @@ void MsckfVio::featureJacobian(
     VectorXd r_j = VectorXd::Zero(jacobian_row_size);
     int stack_cntr = 0;
 
-    // 2. 计算每一个观测（统一帧左右目这里被叫成一个观测）的雅可比与误差
+    // 2. 计算每一个观测（同一帧左右目这里被叫成一个观测）的雅可比与误差
     for (const auto &cam_id : valid_cam_state_ids)
     {
 
@@ -1302,6 +1309,7 @@ void MsckfVio::featureJacobian(
         // 2.1 计算一个左右目观测的雅可比
         measurementJacobian(cam_id, feature.id, H_xi, H_fi, r_i);
 
+        // 计算这个cam_id在整个矩阵的列数，因为要在大矩阵里面放
         auto cam_state_iter = state_server.cam_states.find(cam_id);
         int cam_state_cntr = std::distance(
             state_server.cam_states.begin(), cam_state_iter);
@@ -1418,7 +1426,6 @@ void MsckfVio::measurementJacobian(
     // Modifty the measurement Jacobian to ensure
     // observability constrain.
     // 6. OC
-    // TOSEE
     Matrix<double, 4, 6> A = H_x;
     Matrix<double, 6, 1> u = Matrix<double, 6, 1>::Zero();
     u.block<3, 1>(0, 0) = 
@@ -1426,10 +1433,10 @@ void MsckfVio::measurementJacobian(
     u.block<3, 1>(3, 0) =
         skewSymmetric(p_w - cam_state.position_null) * IMUState::gravity;
     H_x = A - A * u * (u.transpose() * u).inverse() * u.transpose();
-    H_f = -H_x.block<4, 3>(0, 3);  // 这里直接赋值，上面算了个寂寞啊
+    H_f = -H_x.block<4, 3>(0, 3);
 
     // Compute the residual.
-    // 7. 计算误差
+    // 7. 计算归一化平面坐标误差
     r = z - Vector4d(p_c0(0) / p_c0(2), p_c0(1) / p_c0(2),
                         p_c1(0) / p_c1(2), p_c1(1) / p_c1(2));
 
@@ -1669,11 +1676,13 @@ void MsckfVio::findRedundantCamStates(
     return;
 }
 
-// 卡方检验
+// 卡方检验，这部分有点乱
 bool MsckfVio::gatingTest(
     const MatrixXd &H, const VectorXd &r, const int &dof)
 {
-
+    // 输入的dof的值是所有相机观测，且没有去掉滑窗的
+    // 而且按照维度这个卡方的维度也不对
+    // 
     MatrixXd P1 = H * state_server.state_cov * H.transpose();
     MatrixXd P2 = Feature::observation_noise *
                     MatrixXd::Identity(H.rows(), H.rows());
