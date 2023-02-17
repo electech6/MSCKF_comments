@@ -1449,12 +1449,12 @@ void MsckfVio::measurementJacobian(
  */
 void MsckfVio::pruneCamStateBuffer()
 {
-    // 数量还不到该删的程度
+    // 数量还不到该删的程度，配置文件里面是20个
     if (state_server.cam_states.size() < max_cam_state_size)
         return;
 
     // Find two camera states to be removed.
-    // 1. 找出该删的相机状态的id
+    // 1. 找出该删的相机状态的id，两个
     vector<StateIDType> rm_cam_state_ids(0);
     findRedundantCamStates(rm_cam_state_ids);
 
@@ -1478,6 +1478,7 @@ void MsckfVio::pruneCamStateBuffer()
         if (involved_cam_state_ids.size() == 0)
             continue;
         // 2.2 这个点只在一个里面有观测那就直接删
+        // 只用一个观测更新不了状态
         if (involved_cam_state_ids.size() == 1)
         {
             feature.observations.erase(involved_cam_state_ids[0]);
@@ -1532,6 +1533,7 @@ void MsckfVio::pruneCamStateBuffer()
         auto &feature = item.second;
         // Check how many camera states to be removed are associated
         // with this feature.
+        // 这段就是判断一下这个点是否都在待删除帧中有观测
         vector<StateIDType> involved_cam_state_ids(0);
         for (const auto &cam_id : rm_cam_state_ids)
         {
@@ -1540,10 +1542,12 @@ void MsckfVio::pruneCamStateBuffer()
                 involved_cam_state_ids.push_back(cam_id);
         }
 
+        // 一个的情况已经被删掉了
         if (involved_cam_state_ids.size() == 0)
             continue;
 
         // 计算出待删去的这部分的雅可比
+        // 这个点假如有多个观测，但本次只用待删除帧上的观测
         MatrixXd H_xj;
         VectorXd r_j;
         featureJacobian(feature.id, involved_cam_state_ids, H_xj, r_j);
@@ -1567,8 +1571,9 @@ void MsckfVio::pruneCamStateBuffer()
     // 4. 用待删去的这些观测更新一下
     measurementUpdate(H_x, r);
 
-    // 5. 直接删掉对应的行列
-    // 为啥没有做类似于边缘化的操作，个人认为是上面做最后的更新了，所以信息已经更新到了各个地方
+    // 5. 直接删掉对应的行列，直接干掉
+    // 为啥没有做类似于边缘化的操作？
+    // 个人认为是上面做最后的更新了，所以信息已经更新到了各个地方
     for (const auto &cam_id : rm_cam_state_ids)
     {
         int cam_sequence = std::distance(
@@ -1639,7 +1644,7 @@ void MsckfVio::findRedundantCamStates(
 
     // Mark the camera states to be removed based on the
     // motion between states.
-    // 3. 遍历两次，每次必然删掉两个状态，有可能是相对新的，有可能是最旧的
+    // 3. 遍历两次，必然删掉两个状态，有可能是相对新的，有可能是最旧的
     // 但是永远删不到最新的
     for (int i = 0; i < 2; ++i)
     {
@@ -1653,7 +1658,8 @@ void MsckfVio::findRedundantCamStates(
         double distance = (position - key_position).norm();
         double angle = AngleAxisd(rotation * key_rotation.transpose()).angle();
 
-        // 判断大小以及跟踪率，就是cam_state_iter这个状态与关键相机状态的相似度，且当前的点跟踪率很高
+        // 判断大小以及跟踪率，就是cam_state_iter这个状态与关键相机状态的相似度，
+        // 且当前的点跟踪率很高
         // 删去这个帧，否则删掉最老的
         if (angle < rotation_threshold &&
             distance < translation_threshold &&
@@ -1803,7 +1809,7 @@ void MsckfVio::publish(const ros::Time &time)
     tf::vectorEigenToMsg(body_velocity, odom_msg.twist.twist.linear);
 
     // Convert the covariance.
-    // 协方差，取出旋转平移部分
+    // 协方差，取出旋转平移部分，以及它们之间的公共部分组成6自由度的协方差
     Matrix3d P_oo = state_server.state_cov.block<3, 3>(0, 0);
     Matrix3d P_op = state_server.state_cov.block<3, 3>(0, 12);
     Matrix3d P_po = state_server.state_cov.block<3, 3>(12, 0);
