@@ -372,8 +372,8 @@ bool Feature::initializePosition(
 
         // Inner loop.
         // Solve for the delta that can reduce the total cost.
-        // 这层是在同一个雅可比下多次迭代，如果效果不好说明雅可比需要重新计算了
-        // 这么做是减少计算量，否则每次都需要计算雅可比
+        // 这层是在同一个雅可比下多次迭代，如果效果不好说明需要调整阻尼因子了，因为线性化不是很好
+        // 如果多次一直误差不下降，退出循环重新计算雅可比
         do
         {
             // LM算法中的lambda
